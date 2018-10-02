@@ -184,12 +184,6 @@ func runOut(req request, basePath string) error {
 			return nil
 		}
 
-		remoteSize, err := c.FileSize(remotePath)
-		if err == nil && remoteSize == info.Size() {
-			log.Printf("Skip file %q", path)
-			return nil
-		}
-
 		file, err := os.Open(path)
 		if err != nil {
 			log.Printf("Error opening local file %q: %s", path, err)
