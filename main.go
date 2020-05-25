@@ -203,6 +203,6 @@ func runOut(req request, basePath string) error {
 		return fmt.Errorf("upload failed: %s", err)
 	}
 
-	fmt.Println("{}")
+	fmt.Println("{\"version\": { \"ref\": \"1\" },\"metadata\":[]}")
 	return nil
 }
