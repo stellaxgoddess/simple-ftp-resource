@@ -102,7 +102,7 @@ func runCheck(req request) error {
 	defer c.Quit()
 
 	log.Println("Login successful.")
-	fmt.Println("[]")
+	fmt.Println("[{ \"ref\": \"61cbef\" }]")
 	return nil
 }
 
@@ -114,7 +114,7 @@ func runIn(req request, basePath string) error {
 	defer c.Quit()
 
 	log.Println("in is not implemented")
-	fmt.Println("{}")
+	fmt.Println("{\"version\": { \"ref\": \"1\" },\"metadata\":[]}")
 	return nil
 }
 
