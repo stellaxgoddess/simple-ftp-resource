@@ -1,15 +1,20 @@
-FROM golang:1 AS builder
+FROM golang AS builder
 
+ENV PACKAGE=github.com/pawel20987/simple-ftp-resource
 
-RUN mkdir -p /workdir
-WORKDIR /workdir
+RUN mkdir -p /go/src/${PACKAGE}
+WORKDIR /go/src/${PACKAGE}
 
-COPY . /workdir
-RUN go mod download && go build
+ENV LD_FLAGS="-w"
+ENV CGO_ENABLED=0
+
+COPY . /go/src/${PACKAGE}
+RUN go install -a -v -tags netgo -ldflags "${LD_FLAGS}" .
 
 FROM busybox
 
-COPY --from=builder /workdir/simple-ftp-resource /opt/resource/simple-ftp-resource
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /go/bin/simple-ftp-resource /opt/resource/simple-ftp-resource
 
 WORKDIR /opt/resource/
 
