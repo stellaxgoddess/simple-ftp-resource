@@ -1,35 +1,33 @@
 package main
 
 import (
-	"crypto/tls"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
-	"net"
-	"net/textproto"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jlaffaye/ftp"
 )
 
 type request struct {
-	Source     source     `json:"source"`
-	Parameters parameters `json:"params"`
+	Source     *source     `json:"source"`
+	Parameters *parameters `json:"params"`
 }
 
 type source struct {
-	Hostname string `json:"host"`
-	Username string `json:"user"`
+	Address  string `json:"address"`
+	Username string `json:"username"`
 	Password string `json:"password"`
-	StartTLS bool   `json:"tls"`
+	Filename string `json:"filename"`
 }
 
 type parameters struct {
-	LocalPath  string `json:"local"`
-	RemotePath string `json:"remote"`
+	Path string `json:"path"`
 }
 
 func main() {
@@ -40,20 +38,49 @@ func main() {
 	}
 }
 
+func (r *request) verify() {
+	if r.Source == nil {
+		panic("Source not specified")
+	}
+	if r.Parameters == nil {
+		r.Parameters = &parameters{}
+		log.Println("WARNING: Parameters not specified!")
+	}
+
+	if r.Source.Address == "" {
+		panic("'address' field in the source cannot be empty")
+	}
+	if r.Source.Username == "" {
+		panic("'username' field in the source cannot be empty")
+	}
+	if r.Source.Password == "" {
+		panic("'password' field in the source cannot be empty")
+	}
+	if r.Source.Filename == "" {
+		panic("'filename' field in the source cannot be empty")
+	}
+
+	if r.Parameters.Path == "" {
+		log.Println("WARNING: empty path field in the params!")
+		r.Parameters.Path = r.Source.Filename
+	}
+}
+
 func run() error {
-	req := request{}
+	req := &request{}
 
 	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
 		return fmt.Errorf("error decoding input: %s", err)
 	}
 
-	progName := filepath.Base(os.Args[0])
+	req.verify()
 
 	basePath := ""
 	if len(os.Args) > 1 {
 		basePath = os.Args[1]
 	}
 
+	progName := filepath.Base(os.Args[0])
 	switch progName {
 	case "check":
 		return runCheck(req)
@@ -66,25 +93,10 @@ func run() error {
 	}
 }
 
-func connect(src source) (*ftp.ServerConn, error) {
-	host, _, err := net.SplitHostPort(src.Hostname)
+func connect(src *source) (*ftp.ServerConn, error) {
+	c, err := ftp.Dial(src.Address)
 	if err != nil {
-		return nil, fmt.Errorf("can not split host and port: %s", err)
-	}
-
-	c, err := ftp.Dial(src.Hostname)
-	if err != nil {
-		return nil, fmt.Errorf("error dialing %q: %s", src.Hostname, err)
-	}
-
-	if src.StartTLS {
-		config := &tls.Config{
-			ServerName: host,
-		}
-
-		if err := c.StartTLS(config); err != nil {
-			return nil, fmt.Errorf("error upgrading to TLS: %s", err)
-		}
+		return nil, fmt.Errorf("error dialing %q: %s", src.Address, err)
 	}
 
 	if err := c.Login(src.Username, src.Password); err != nil {
@@ -94,115 +106,106 @@ func connect(src source) (*ftp.ServerConn, error) {
 	return c, nil
 }
 
-func runCheck(req request) error {
+func runCheck(req *request) error {
+	log.Println("Connecting to the server...")
 	c, err := connect(req.Source)
 	if err != nil {
 		return fmt.Errorf("error during connect: %s", err)
 	}
 	defer c.Quit()
 
-	log.Println("Login successful.")
-	fmt.Println("[{ \"ref\": \"61cbef\" }]")
-	return nil
-}
-
-func runIn(req request, basePath string) error {
-	c, err := connect(req.Source)
+	log.Println("Reading the file...")
+	file, err := c.Retr(req.Source.Filename)
 	if err != nil {
-		return fmt.Errorf("error during connect: %s", err)
-	}
-	defer c.Quit()
-
-	log.Println("in is not implemented")
-	fmt.Println("{\"version\": { \"ref\": \"1\" },\"metadata\":[]}")
-	return nil
-}
-
-func runOut(req request, basePath string) error {
-	params := req.Parameters
-	if params.LocalPath == "" {
-		return errors.New("local path can not be empty")
-	}
-
-	if !strings.HasPrefix(params.RemotePath, "/") {
-		return errors.New("remote path must be absolute")
-	}
-
-	baseAbs, err := filepath.Abs(basePath)
-	if err != nil {
-		return fmt.Errorf("can not convert base path to absolute: %s", err)
-	}
-	log.Printf("Local path: %s", baseAbs)
-
-	if filepath.IsAbs(params.LocalPath) {
-		return fmt.Errorf("local path can not be absolute: %s", params.LocalPath)
-	}
-
-	localAbs := filepath.Join(baseAbs, params.LocalPath)
-	_, err = os.Stat(localAbs)
-	switch {
-	case os.IsNotExist(err):
-		return fmt.Errorf("local path does not exist: %s", localAbs)
-	case err != nil:
-		return fmt.Errorf("error accessing local path %q: %s", localAbs, err)
-	default:
-	}
-
-	c, err := connect(req.Source)
-	if err != nil {
-		return fmt.Errorf("error during connect: %s", err)
-	}
-	defer c.Quit()
-
-	err = filepath.Walk(localAbs, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Printf("Error accessing %q: %s", path, err)
-			return err
-		}
-
-		relative := strings.TrimPrefix(path, localAbs)
-		remotePath := filepath.Join(params.RemotePath, relative)
-
-		log.Printf("%s -> %s", path, remotePath)
-		if remotePath == params.RemotePath {
-			// skip base directory
-			return nil
-		}
-
-		if info.IsDir() {
-			err := c.MakeDir(remotePath)
-			if protoErr, ok := err.(*textproto.Error); ok {
-				if protoErr.Code == 550 && strings.Contains(protoErr.Msg, "exists") {
-					return nil
-				}
-			}
-
-			if err != nil {
-				log.Printf("Error creating directory %q: %s", remotePath, err)
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			log.Printf("Error opening local file %q: %s", path, err)
-			return err
-		}
-		defer file.Close()
-
-		if err := c.Stor(remotePath, file); err != nil {
-			log.Printf("Error uploading file %q: %s", remotePath, err)
-			return err
-		}
-
+		log.Println("File does not exist...")
+		fmt.Println("[]")
 		return nil
-	})
+	}
+	defer file.Close()
 
-	if err != nil {
-		return fmt.Errorf("upload failed: %s", err)
+	log.Println("Computing file hash...")
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return fmt.Errorf("error reading file: %s", err)
 	}
 
-	fmt.Println("{\"version\": { \"ref\": \"1\" },\"metadata\":[]}")
+	fmt.Println("[{ \"ref\": \"" + hex.EncodeToString(hasher.Sum(nil)) + "\" }]")
+	return nil
+}
+
+func runIn(req *request, basePath string) error {
+	log.Println("Connecting to the server...")
+	c, err := connect(req.Source)
+	if err != nil {
+		return fmt.Errorf("error during connect: %s", err)
+	}
+	defer c.Quit()
+
+	log.Println("Opening remote file '" + req.Source.Filename + "'...")
+	file, err := c.Retr(req.Source.Filename)
+	if err != nil {
+		return fmt.Errorf("error opening remote file: %s", err)
+	}
+	defer file.Close()
+
+	log.Println("Reading remote file...")
+	filedata, err := ioutil.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("error reading remote file: %s", err)
+	}
+
+	log.Println("Computing hash for downloaded content...")
+	hasher := sha256.New()
+	_, err = hasher.Write(filedata)
+	if err != nil {
+		return fmt.Errorf("error computing file hash: %s", err)
+	}
+
+	log.Println("Writting local file'" + basePath + "/" + req.Parameters.Path + "'...")
+	err = ioutil.WriteFile(basePath+"/"+req.Parameters.Path, filedata, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing file: %s", err)
+	}
+
+	fmt.Println("{\"version\": { \"ref\": \"" + hex.EncodeToString(hasher.Sum(nil)) + "\" },\"metadata\":[]}")
+	return nil
+}
+
+func runOut(req *request, basePath string) error {
+	log.Println("Connecting to the server...")
+	c, err := connect(req.Source)
+	if err != nil {
+		return fmt.Errorf("error during connect: %s", err)
+	}
+	defer c.Quit()
+
+	log.Println("Opening local file...")
+	file, err := os.Open(basePath + "/" + req.Parameters.Path)
+	if err != nil {
+		return fmt.Errorf("error opening local file: %s", err)
+	}
+	defer file.Close()
+
+	log.Println("Uploading file to the server...")
+	err = c.Stor(req.Source.Filename, file)
+	if err != nil {
+		return fmt.Errorf("error uploading remote file: %s", err)
+	}
+	file.Close()
+
+	log.Println("Reading local file...")
+	filedata, err := ioutil.ReadFile(basePath + "/" + req.Parameters.Path)
+	if err != nil {
+		return fmt.Errorf("error reading local file: %s", err)
+	}
+
+	log.Println("Computing file hash...")
+	hasher := sha256.New()
+	_, err = hasher.Write(filedata)
+	if err != nil {
+		return fmt.Errorf("error computing file hash: %s", err)
+	}
+
+	fmt.Println("{\"version\":{\"ref\":\"" + hex.EncodeToString(hasher.Sum(nil)) + "\"},\"metadata\":[]}")
 	return nil
 }

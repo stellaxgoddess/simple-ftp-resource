@@ -1,21 +1,15 @@
 FROM golang:1 AS builder
 
-ENV PACKAGE=github.com/xperimental/simple-ftp-resource
 
-RUN mkdir -p /go/src/${PACKAGE}
-WORKDIR /go/src/${PACKAGE}
+RUN mkdir -p /workdir
+WORKDIR /workdir
 
-ENV LD_FLAGS="-w"
-ENV CGO_ENABLED=0
-
-COPY . /go/src/${PACKAGE}
-RUN go install -a -v -tags netgo -ldflags "${LD_FLAGS}" .
+COPY . /workdir
+RUN go mod download && go build
 
 FROM busybox
-LABEL maintainer="Robert Jacob <xperimental@solidproject.de>"
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /go/bin/simple-ftp-resource /opt/resource/simple-ftp-resource
+COPY --from=builder /workdir/simple-ftp-resource /opt/resource/simple-ftp-resource
 
 WORKDIR /opt/resource/
 

@@ -1,0 +1,11 @@
+{
+    "source": {
+        "address": "localhost:21",
+        "username": "test",
+        "password": "test",
+        "filename": "test.txt"
+    },
+    "params": {
+        "path": "input.txt"
+    }
+}
